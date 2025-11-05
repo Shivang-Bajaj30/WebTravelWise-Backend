@@ -1,0 +1,30 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+
+# Environment variables
+.env
+.env.*
+
+# Editor/IDE
+.vscode/
+.idea/
+
+# Distribution / build
+build/
+dist/
+*.egg-info/
+
+# Logs
+*.log
+
+# AI raw outputs (debug files)
+ai_gen_raw_*.json
+
+# SQLite
+*.sqlite3
