@@ -1,6 +1,7 @@
 import os
 import json
-from openai import OpenAI
+from google import genai
+from google.genai import types
 from dotenv import load_dotenv
 from datetime import datetime, date, timedelta
 import time
@@ -8,8 +9,11 @@ import time
 # Load environment variables
 load_dotenv()
 
-# Initialize OpenAI client
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Initialize Gemini client
+client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+
+# Model to use
+GEMINI_MODEL = "gemini-2.5-flash"
 
 
 def _parse_date(d):
@@ -61,6 +65,58 @@ def _log_raw_response(content, label="response"):
         print(f"[AI_Gen] Raw model output saved to {fname}")
     except Exception as e:
         print("[AI_Gen] Failed to write raw model output:", e)
+
+
+def _call_gemini(prompt, system_instruction="You are a travel itinerary assistant that returns only JSON.", max_retries=3):
+    """Call the Gemini API with automatic retry on rate limits."""
+    wait_times = [30]  # seconds to wait between retries
+
+    for attempt in range(max_retries + 1):
+        try:
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    temperature=0.2,
+                    max_output_tokens=2000,
+                ),
+            )
+            return response.text.strip()
+        except Exception as e:
+            error_str = str(e).lower()
+            is_rate_limit = "429" in error_str or "quota" in error_str or "resource_exhausted" in error_str or "rate" in error_str
+
+            if is_rate_limit and attempt < max_retries:
+                wait = wait_times[attempt]
+                print(f"[AI_Gen] Rate limited (attempt {attempt + 1}/{max_retries}). Waiting {wait}s before retry...")
+                time.sleep(wait)
+            else:
+                raise
+
+
+def _extract_json(content):
+    """Extract JSON from a string that might contain markdown fences or extra text."""
+    # Remove markdown code fences if present
+    if "```json" in content:
+        start = content.find("```json") + 7
+        end = content.find("```", start)
+        if end != -1:
+            content = content[start:end].strip()
+    elif "```" in content:
+        start = content.find("```") + 3
+        end = content.find("```", start)
+        if end != -1:
+            content = content[start:end].strip()
+
+    # If still not starting with {, try to find it
+    if not content.startswith("{"):
+        start = content.find("{")
+        end = content.rfind("}") + 1
+        if start != -1 and end > start:
+            content = content[start:end]
+
+    return content
 
 
 def _generate_itinerary_chunk(destination, travelers, start_date, end_date, preferences, budget=None, travel_with=None):
@@ -115,30 +171,15 @@ Return a valid JSON object with this structure (ONLY the JSON, no other text):
   "itinerary": [{{"day": 1, "activities": ["Morning: Activity"]}}]
 }}
 
-Return ONLY the JSON object as shown above. Do not include any explanatory text.
+Return ONLY the JSON object as shown above. Do not include any explanatory text or markdown formatting.
 """
 
     if days_count:
         prompt += f"\nIMPORTANT: The 'itinerary' array MUST contain EXACTLY {days_count} objects. Number 'day' fields sequentially from 1 to {days_count}.\n"
 
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are a travel itinerary assistant that returns only JSON."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.2,
-            max_tokens=2000,
-        )
-
-        content = response.choices[0].message.content.strip()
-
-        if not content.startswith("{"):
-            start = content.find("{")
-            end = content.rfind("}") + 1
-            if start != -1 and end != -1:
-                content = content[start:end]
+        content = _call_gemini(prompt)
+        content = _extract_json(content)
 
         try:
             itinerary_data = json.loads(content)
@@ -153,21 +194,10 @@ Return ONLY the JSON object as shown above. Do not include any explanatory text.
                 warning = f"Model returned {orig_len} days but {days_count} were requested. Normalizing (truncate/pad)."
                 source = "partial"
                 retry_prompt = prompt + f"\nYou returned {len(itinerary_data['itinerary'])} days but required {days_count}. Return EXACTLY {days_count} days now, keep same style.\n"
-                response2 = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": "You are a travel itinerary assistant that returns only JSON."},
-                        {"role": "user", "content": retry_prompt},
-                    ],
-                    temperature=0.2,
-                    max_tokens=2000,
-                )
-                content2 = response2.choices[0].message.content.strip()
-                if not content2.startswith("{"):
-                    start = content2.find("{")
-                    end = content2.rfind("}") + 1
-                    if start != -1 and end != -1:
-                        content2 = content2[start:end]
+
+                content2 = _call_gemini(retry_prompt)
+                content2 = _extract_json(content2)
+
                 try:
                     itinerary_data = json.loads(content2)
                     if days_count and 'itinerary' in itinerary_data and len(itinerary_data['itinerary']) != days_count:
@@ -187,7 +217,7 @@ Return ONLY the JSON object as shown above. Do not include any explanatory text.
         return itinerary_data
 
     except json.JSONDecodeError:
-        print("⚠️ GPT returned invalid JSON. Returning fallback itinerary.")
+        print("⚠️ Gemini returned invalid JSON. Returning fallback itinerary.")
         fallback_itinerary = []
         for i in range(days_count or 1):
             activities = _filler_activities(2)
@@ -204,7 +234,7 @@ Return ONLY the JSON object as shown above. Do not include any explanatory text.
             "transportation": ["Metro", "Taxi"],
             "costs": ["Accommodation: ₹58000", "Food: ₹20000"],
             "itinerary": fallback_itinerary,
-            "error": "GPT returned invalid JSON",
+            "error": "Gemini returned invalid JSON",
             "warning": "Model returned invalid JSON; returning fallback/sample itinerary.",
             "source": "fallback"
         }

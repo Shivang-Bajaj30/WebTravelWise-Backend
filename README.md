@@ -22,7 +22,7 @@ This README explains how to set up and run the backend, the AI itinerary behavio
 Prerequisites
 - Python 3.10+ (or a supported 3.x runtime).
 - pip
-- an OpenAI API key (if you want real AI-generated itineraries).
+- a Google Gemini API key (if you want real AI-generated itineraries).
 
 Recommended quick setup (Windows / cmd.exe):
 
@@ -36,14 +36,14 @@ python -m venv .venv
 2. Install dependencies (create a `requirements.txt` if not present). Example packages used in this repo:
 
 ```cmd
-pip install flask flask_sqlalchemy python-dotenv openai werkzeug
+pip install flask flask_sqlalchemy python-dotenv google-genai werkzeug
 ```
 
 3. Create a `.env` file in the project root and add required variables. Example:
 
 ```
 FLASK_ENV=development
-OPENAI_API_KEY=sk-...
+GEMINI_API_KEY=AIza...
 # your DB connection string or other secrets used by msconfig.py
 ```
 
@@ -59,7 +59,7 @@ The server will start on `http://127.0.0.1:5000` by default.
 
 ## Important files
 - `app.py` — Flask app and routes (signup, login, generate_itinerary, etc.).
-- `AI_Gen.py` — produces the itinerary JSON using the OpenAI client and includes chunking, normalization, and fallback logic.
+- `AI_Gen.py` — produces the itinerary JSON using the Google Gemini API (`gemini-2.5-flash`) and includes chunking, normalization, and fallback logic.
 - `models/User.py`, `models/Trips.py` — SQLAlchemy models for users and saved trips.
 - `.env` — environment variables (not checked in).
 
@@ -146,7 +146,7 @@ The itinerary array is guaranteed to contain exactly the requested number of day
 ## Troubleshooting
 
 - If you get invalid JSON or truncated itineraries:
-  - Check your `OPENAI_API_KEY` and your plan's token limits (`max_tokens`); long trips produce larger outputs.
+  - Check your `GEMINI_API_KEY` and your plan's token limits (`max_tokens`); long trips produce larger outputs.
   - Check the repo root for `ai_gen_raw_invalid_json_*` files — they contain the raw model output used for debugging.
 
 - If you want very detailed per-day content for extremely long trips (30+ days):
