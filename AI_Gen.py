@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
@@ -67,7 +68,7 @@ def _log_raw_response(content, label="response"):
         print("[AI_Gen] Failed to write raw model output:", e)
 
 
-def _call_gemini(prompt, system_instruction="You are a travel itinerary assistant that returns only JSON.", max_retries=3):
+def _call_gemini(prompt, system_instruction="You are a travel itinerary assistant that returns only valid JSON.", max_retries=3):
     """Call the Gemini API with automatic retry on rate limits."""
     wait_times = [30]  # seconds to wait between retries
 
@@ -79,7 +80,8 @@ def _call_gemini(prompt, system_instruction="You are a travel itinerary assistan
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction,
                     temperature=0.2,
-                    max_output_tokens=2000,
+                    max_output_tokens=8000,
+                    response_mime_type="application/json",
                 ),
             )
             return response.text.strip()
@@ -96,27 +98,39 @@ def _call_gemini(prompt, system_instruction="You are a travel itinerary assistan
 
 
 def _extract_json(content):
-    """Extract JSON from a string that might contain markdown fences or extra text."""
-    # Remove markdown code fences if present
-    if "```json" in content:
-        start = content.find("```json") + 7
-        end = content.find("```", start)
-        if end != -1:
-            content = content[start:end].strip()
-    elif "```" in content:
-        start = content.find("```") + 3
-        end = content.find("```", start)
-        if end != -1:
-            content = content[start:end].strip()
+    """Extract JSON from a string that might contain markdown fences, thinking text, or extra content."""
+    # Strip any control characters except newlines/tabs
+    content = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', content)
 
-    # If still not starting with {, try to find it
+    # Remove markdown code fences if present (handles ```json and ```)
+    fence_pattern = re.compile(r'```(?:json)?\s*\n?(.*?)\n?```', re.DOTALL)
+    fence_match = fence_pattern.search(content)
+    if fence_match:
+        content = fence_match.group(1).strip()
+
+    # If still not starting with {, try to find the outermost JSON object
     if not content.startswith("{"):
         start = content.find("{")
         end = content.rfind("}") + 1
         if start != -1 and end > start:
             content = content[start:end]
 
-    return content
+    # Attempt to repair truncated JSON (missing closing brackets)
+    # Count unmatched braces/brackets
+    open_braces = content.count("{") - content.count("}")
+    open_brackets = content.count("[") - content.count("]")
+
+    if open_braces > 0 or open_brackets > 0:
+        # Truncate to last complete value (remove trailing partial content)
+        # Find the last complete line that ends with a comma, bracket, or brace
+        last_good = max(content.rfind(',\n'), content.rfind('\n'))
+        if last_good > len(content) // 2:  # only truncate if we have most of the content
+            content = content[:last_good]
+        # Close any remaining open brackets/braces
+        content += "]" * max(0, open_brackets)
+        content += "}" * max(0, open_braces)
+
+    return content.strip()
 
 
 def _generate_itinerary_chunk(destination, travelers, start_date, end_date, preferences, budget=None, travel_with=None):
@@ -138,40 +152,37 @@ def _generate_itinerary_chunk(destination, travelers, start_date, end_date, pref
     prompt = f"""
 Create a {days_count}-day travel itinerary for {travelers} people visiting {destination} on a {budget_display} budget, tailored for {travel_with_display}.
 Use real, famous places and hotels that actually exist in {destination}.
-Please include 4-5 different hotels with varying price ranges and amenities.
+Include 4-5 hotels with varying price ranges. Keep descriptions short (1 sentence max).
+Do NOT include any Google Maps URLs. Only include coordinates.
 
-Return a valid JSON object with this structure (ONLY the JSON, no other text):
+Return a valid JSON object with this exact structure:
 
 {{
     "places": [
         {{
-            "name": "Place Name (use real place names in {destination})",
+            "name": "Real place name",
             "time": "2-3 hours",
-            "details": "Brief description",
-            "location": "Google Maps URL (clickable) for the place, e.g. https://www.google.com/maps/place/...",
+            "details": "One sentence description",
             "coordinates": {{"lat": 0.0, "lng": 0.0}},
-            "pricing": "Entry fee info",
+            "pricing": "Entry fee",
             "bestTime": "Best time to visit"
         }}
     ],
     "hotels": [
         {{
-            "name": "Hotel Name (use real hotels in {destination})",
-            "address": "Real address in {destination}",
-            "location": "Google Maps URL for the hotel (clickable)",
+            "name": "Real hotel name",
+            "address": "Short address",
             "coordinates": {{"lat": 0.0, "lng": 0.0}},
-            "price": "Price range",
+            "price": "Price range per night",
             "rating": "4.5/5",
-            "amenities": [],
-            "description": "Brief description"
+            "amenities": ["WiFi", "Pool"],
+            "description": "One sentence"
         }}
     ],
-  "transportation": ["Transportation option 1"],
-      "costs": ["Accommodation: ₹X"],
-  "itinerary": [{{"day": 1, "activities": ["Morning: Activity"]}}]
+    "transportation": ["Option 1", "Option 2"],
+    "costs": ["Accommodation: ₹X", "Food: ₹Y"],
+    "itinerary": [{{"day": 1, "activities": ["Morning: Activity", "Afternoon: Activity"]}}]
 }}
-
-Return ONLY the JSON object as shown above. Do not include any explanatory text or markdown formatting.
 """
 
     if days_count:
@@ -224,10 +235,10 @@ Return ONLY the JSON object as shown above. Do not include any explanatory text 
             fallback_itinerary.append({"day": i + 1, "activities": activities})
         return {
             "places": [
-                {"name": "Burj Khalifa", "details": "Iconic Dubai landmark", "time": "Morning", "pricing": "₹2800", "bestTime": "Evening", "location": "https://www.google.com/maps/place/Burj+Khalifa", "coordinates": {"lat": 25.1972, "lng": 55.2744}}
+                {"name": "Burj Khalifa", "details": "Iconic Dubai landmark", "time": "Morning", "pricing": "₹2800", "bestTime": "Evening", "coordinates": {"lat": 25.1972, "lng": 55.2744}}
             ],
             "hotels": [
-                {"name": "Atlantis The Palm", "address": "Crescent Rd, The Palm Jumeirah, Dubai", "location": "https://www.google.com/maps/place/Atlantis+The+Palm+Dubai", "coordinates": {"lat": 25.1304, "lng": 55.1171},
+                {"name": "Atlantis The Palm", "address": "Crescent Rd, The Palm Jumeirah, Dubai", "coordinates": {"lat": 25.1304, "lng": 55.1171},
                  "price": "₹29000/night", "rating": "4.8/5", "amenities": ["Wi-Fi", "Pool", "Beach"],
                  "description": "Luxury beachfront hotel with ocean views."}
             ],

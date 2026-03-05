@@ -8,7 +8,7 @@ load_dotenv()
 
 # --- SQL Server Connection Config ---
 DRIVER = os.getenv("SQL_DRIVER", "ODBC Driver 17 for SQL Server")
-SERVER = os.getenv("SQL_SERVER", "LENOVO-LOQ\\MSSQL")  # your default server
+SERVER = os.getenv("SQL_SERVER", "LENOVO-LOQ\\MSSQL")  
 DATABASE = os.getenv("SQL_DATABASE", "python")
 TRUSTED_CONNECTION = os.getenv("SQL_TRUSTED_CONNECTION", "yes")
 
