@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import requests
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
@@ -49,6 +50,92 @@ def _log_raw_response(content, label="response"):
         print(f"[AI_Gen] Raw model output saved to {fname}")
     except Exception as e:
         print("[AI_Gen] Failed to write raw model output:", e)
+
+
+def _fetch_tripadvisor_image(query):
+    """Fetch a real photo via TripAdvisor Content API.
+    
+    Two-step: search for location → get photos for that location.
+    Requires TRIPADVISOR_API_KEY in .env (free tier).
+    Returns the image URL or None.
+    """
+    api_key = os.getenv("TRIPADVISOR_API_KEY")
+    if not api_key:
+        print("[AI_Gen] TRIPADVISOR_API_KEY not found in .env")
+        return None
+
+    try:
+        # Step 1: Search for the location
+        search_url = "https://api.content.tripadvisor.com/api/v1/location/search"
+        search_params = {
+            "key": api_key,
+            "searchQuery": query,
+            "language": "en",
+        }
+        search_resp = requests.get(search_url, params=search_params, timeout=8)
+        if search_resp.status_code != 200:
+            print(f"[AI_Gen] TripAdvisor search error {search_resp.status_code}")
+            return None
+
+        locations = search_resp.json().get("data", [])
+        if not locations:
+            return None
+
+        location_id = locations[0].get("location_id")
+        if not location_id:
+            return None
+
+        # Step 2: Get photos for this location
+        photos_url = f"https://api.content.tripadvisor.com/api/v1/location/{location_id}/photos"
+        photos_params = {
+            "key": api_key,
+            "language": "en",
+        }
+        photos_resp = requests.get(photos_url, params=photos_params, timeout=8)
+        if photos_resp.status_code != 200:
+            return None
+
+        photos = photos_resp.json().get("data", [])
+        if photos:
+            # Get the largest available image
+            images = photos[0].get("images", {})
+            for size in ["large", "medium", "original", "small"]:
+                if size in images and "url" in images[size]:
+                    return images[size]["url"]
+
+    except Exception as e:
+        print(f"[AI_Gen] TripAdvisor image fetch failed for '{query}': {e}")
+    return None
+
+
+def _enrich_with_images(itinerary_data, destination=""):
+    """Add real photos to places and hotels via TripAdvisor."""
+    if not itinerary_data:
+        return itinerary_data
+
+    # Enrich places
+    for place in itinerary_data.get("places", []):
+        if not place.get("image"):
+            search_query = f"{place.get('name', '')} {destination}"
+            img = _fetch_tripadvisor_image(search_query)
+            if img:
+                place["image"] = img
+                print(f"[AI_Gen] 📷 Found image for place: {place.get('name')}")
+            else:
+                print(f"[AI_Gen] ❌ No image found for place: {place.get('name')}")
+
+    # Enrich hotels
+    for hotel in itinerary_data.get("hotels", []):
+        if not hotel.get("image"):
+            search_query = f"{hotel.get('name', '')} {destination}"
+            img = _fetch_tripadvisor_image(search_query)
+            if img:
+                hotel["image"] = img
+                print(f"[AI_Gen] 📷 Found image for hotel: {hotel.get('name')}")
+            else:
+                print(f"[AI_Gen] ❌ No image found for hotel: {hotel.get('name')}")
+
+    return itinerary_data
 
 
 def _call_gemini(prompt, system_instruction="You are a travel itinerary assistant that returns only valid JSON."):
@@ -213,14 +300,16 @@ Return a valid JSON object with this exact structure:
             except Exception:
                 pass
 
+        # Enrich with real photos from Wikipedia
+        # _enrich_with_images(itinerary_data, destination)
+
         return itinerary_data
 
     except json.JSONDecodeError:
         print("⚠️ Gemini returned invalid JSON. Returning fallback itinerary.")
         fallback_itinerary = []
         for i in range(days_count or 1):
-            activities = _filler_activities(2)
-            fallback_itinerary.append({"day": i + 1, "activities": activities})
+            fallback_itinerary.append({"day": i + 1, "activities": ["Explore local attractions", "Try local cuisine"]})
         return {
             "places": [
                 {"name": "FALLBACK DATA", "details": "FALLBACK DATA", "time": "FALLBACK DATA", "pricing": "FALLBACK DATA", "bestTime": "FALLBACK DATA", "coordinates": {"lat": 25.1972, "lng": 55.2744}}
