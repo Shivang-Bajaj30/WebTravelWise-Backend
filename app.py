@@ -4,6 +4,7 @@ from models.Trips import *
 
 from werkzeug.security import generate_password_hash, check_password_hash
 from AI_Gen import generate_itinerary
+import json
 
 # app = Flask(__name__)
 
@@ -79,6 +80,7 @@ def generate_itinerary_route():
             start_date=start_date,
             end_date=end_date,
             preferences=preferences,
+            itinerary_data=json.dumps(ai_response),
         )
         db.session.add(new_trip)
         db.session.commit()

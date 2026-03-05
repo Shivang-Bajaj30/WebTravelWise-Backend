@@ -13,8 +13,8 @@ load_dotenv()
 # Initialize Gemini client
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-# Model to use
-GEMINI_MODEL = "gemini-2.5-flash"
+# Models to try (in order of preference) — auto-fallback if one is rate-limited
+GEMINI_MODELS = ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-1.5-flash"]
 
 
 def _parse_date(d):
@@ -40,23 +40,6 @@ def _parse_date(d):
     except Exception:
         raise ValueError(f"Unrecognized date format: {d}")
 
-
-def _filler_activities(n):
-    samples = [
-        "Relax at the hotel and enjoy amenities",
-        "Explore a nearby local market",
-        "Try popular local snacks at a street food stall",
-        "Take a short guided walking tour",
-        "Visit a local museum or cultural center",
-        "Enjoy a sunset viewpoint",
-        "Spend time at a popular shopping area",
-    ]
-    out = []
-    for i in range(n):
-        out.append(samples[i % len(samples)])
-    return out
-
-
 def _log_raw_response(content, label="response"):
     try:
         ts = int(time.time())
@@ -68,14 +51,15 @@ def _log_raw_response(content, label="response"):
         print("[AI_Gen] Failed to write raw model output:", e)
 
 
-def _call_gemini(prompt, system_instruction="You are a travel itinerary assistant that returns only valid JSON.", max_retries=3):
-    """Call the Gemini API with automatic retry on rate limits."""
-    wait_times = [30]  # seconds to wait between retries
+def _call_gemini(prompt, system_instruction="You are a travel itinerary assistant that returns only valid JSON."):
+    """Call the Gemini API. Tries each model in GEMINI_MODELS, falling back on rate limits."""
+    last_error = None
 
-    for attempt in range(max_retries + 1):
+    for model in GEMINI_MODELS:
         try:
+            print(f"[AI_Gen] Trying model: {model}\n\n")
             response = client.models.generate_content(
-                model=GEMINI_MODEL,
+                model=model,
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction,
@@ -84,17 +68,21 @@ def _call_gemini(prompt, system_instruction="You are a travel itinerary assistan
                     response_mime_type="application/json",
                 ),
             )
+            print(f"[AI_Gen] ✅ Success with model: {model}\n\n")
             return response.text.strip()
         except Exception as e:
+            last_error = e
             error_str = str(e).lower()
             is_rate_limit = "429" in error_str or "quota" in error_str or "resource_exhausted" in error_str or "rate" in error_str
 
-            if is_rate_limit and attempt < max_retries:
-                wait = wait_times[attempt]
-                print(f"[AI_Gen] Rate limited (attempt {attempt + 1}/{max_retries}). Waiting {wait}s before retry...")
-                time.sleep(wait)
+            if is_rate_limit:
+                print(f"[AI_Gen] ⚠️ {model} rate limited, trying next model...\n\n\n")
+                continue  # try next model
             else:
-                raise
+                raise  # non-rate-limit error, raise immediately
+
+    # All models exhausted
+    raise last_error
 
 
 def _extract_json(content):
@@ -235,15 +223,15 @@ Return a valid JSON object with this exact structure:
             fallback_itinerary.append({"day": i + 1, "activities": activities})
         return {
             "places": [
-                {"name": "Burj Khalifa", "details": "Iconic Dubai landmark", "time": "Morning", "pricing": "₹2800", "bestTime": "Evening", "coordinates": {"lat": 25.1972, "lng": 55.2744}}
+                {"name": "FALLBACK DATA", "details": "FALLBACK DATA", "time": "FALLBACK DATA", "pricing": "FALLBACK DATA", "bestTime": "FALLBACK DATA", "coordinates": {"lat": 25.1972, "lng": 55.2744}}
             ],
             "hotels": [
-                {"name": "Atlantis The Palm", "address": "Crescent Rd, The Palm Jumeirah, Dubai", "coordinates": {"lat": 25.1304, "lng": 55.1171},
-                 "price": "₹29000/night", "rating": "4.8/5", "amenities": ["Wi-Fi", "Pool", "Beach"],
-                 "description": "Luxury beachfront hotel with ocean views."}
+                {"name": "FALLBACK DATA", "address": "FALLBACK DATA", "coordinates": {"lat": 25.1304, "lng": 55.1171},
+                 "price": "FALLBACK DATA", "rating": "FALLBACK DATA", "amenities": ["FALLBACK DATA", "FALLBACK DATA", "FALLBACK DATA"],
+                 "description": "FALLBACK DATA"}
             ],
-            "transportation": ["Metro", "Taxi"],
-            "costs": ["Accommodation: ₹58000", "Food: ₹20000"],
+            "transportation": ["FALLBACK DATA", "FALLBACK DATA"],
+            "costs": ["FALLBACK DATA", "FALLBACK DATA"],
             "itinerary": fallback_itinerary,
             "error": "Gemini returned invalid JSON",
             "warning": "Model returned invalid JSON; returning fallback/sample itinerary.",
